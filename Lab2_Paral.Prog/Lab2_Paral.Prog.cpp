@@ -5,7 +5,7 @@
 #include <thread>
 #include <mutex>
 #include <sstream>
-#include <chrono> // Подключено для использования задержек (std::this_thread::sleep_for)
+#include <chrono>
 
 // Размер пачки для пакетной записи в файл
 const size_t BATCH_SIZE = 5;
@@ -16,7 +16,7 @@ struct FactorResult {
     std::vector<long long> factors;
 };
 
-// Общие ресурсы с защитой мьютексами
+// Общие ресурсы и примитивы синхронизации
 std::mutex queue_mutex;
 std::queue<long long> task_queue;
 std::mutex file_mutex;
@@ -42,7 +42,7 @@ std::vector<long long> factorize(long long n) {
     return factors;
 }
 
-// Функция, выполняемая каждым равноправным потоком (узлом)
+// Функция рабочий-узел (рп-модель с равноправными узлами)
 void worker_node(int thread_id) {
     std::vector<FactorResult> local_buffer;
     local_buffer.reserve(BATCH_SIZE);
@@ -50,34 +50,29 @@ void worker_node(int thread_id) {
     while (true) {
         long long current_task = -1;
 
-        // Критическая секция: захват задачи из общей очереди
+        // Извлечение задачи из общей очереди
         {
             std::lock_guard<std::mutex> lock(queue_mutex);
             if (task_queue.empty()) {
-                break; // Задачи закончились
+                break;
             }
             current_task = task_queue.front();
             task_queue.pop();
         }
 
-        // МОДЕЛИРОВАНИЕ РАЗНОЙ СКОРОСТИ ИСПОЛНИТЕЛЕЙ (Дополнение по п. 3 задания):
-        // Моделируем «тяжелую» задачу или «медленный» поток:
-        // Если поток с ID 0 обрабатывает большое число, добавим искусственную задержку,
-        // чтобы показать дисбаланс производительности, описанный в отчете.
+        // Моделирование разной скорости исполнителей (дисбаланса)
         if (thread_id == 0 && current_task > 100000) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Имитация медленной работы
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));  // Стандартная небольшая задержка
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
 
-        // Выполнение трудоемкой независимой задачи
+        // Выполнение задачи
         std::vector<long long> result_factors = factorize(current_task);
-
-        // Сохранение результата в локальный буфер
         local_buffer.push_back({ current_task, result_factors });
 
-        // Если буфер заполнился, производим пакетную запись в файл
+        // Пакетная запись при заполнении локального буфера
         if (local_buffer.size() >= BATCH_SIZE) {
             std::lock_guard<std::mutex> lock(file_mutex);
             for (const auto& res : local_buffer) {
@@ -92,7 +87,7 @@ void worker_node(int thread_id) {
         }
     }
 
-    // Сброс оставшихся результатов из буфера по завершении работы потока
+    // Сброс оставшихся результатов из буфера по завершении работы
     if (!local_buffer.empty()) {
         std::lock_guard<std::mutex> lock(file_mutex);
         for (const auto& res : local_buffer) {
@@ -107,13 +102,12 @@ void worker_node(int thread_id) {
 }
 
 int main() {
-    // Установка локали для корректного ввода/вывода
     std::setlocale(LC_ALL, "Russian");
 
     std::string input_filename = "input.txt";
     std::string output_filename = "output.txt";
 
-    // 1. Чтение входных данных из файла
+    // Чтение входных данных
     std::ifstream input_file(input_filename);
     if (!input_file.is_open()) {
         std::cerr << "Ошибка: не удалось открыть файл " << input_filename << "\n";
@@ -131,27 +125,26 @@ int main() {
         return 0;
     }
 
-    // 2. Открытие общего файла результатов
+    // Открытие файла результатов
     output_file.open(output_filename);
     if (!output_file.is_open()) {
         std::cerr << "Ошибка: не удалось открыть файл для записи " << output_filename << "\n";
         return 1;
     }
 
-    // Определение количества доступных потоков (узлов)
+    // Инициализация и запуск пула равноправных потоков
     unsigned int num_threads = std::thread::hardware_concurrency();
-    if (num_threads == 0) num_threads = 4; // резервное значение
+    if (num_threads == 0) num_threads = 4;
 
     std::cout << "Запуск вычислений в " << num_threads << " равноправных потоках...\n";
 
-    // 3. Создание пула равноправных потоков (рп-модель) с передачей ID потока
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
     for (unsigned int i = 0; i < num_threads; ++i) {
         threads.emplace_back(worker_node, i);
     }
 
-    // 4. Ожидание завершения работы всех потоков
+    // Ожидание завершения работы всех потоков
     for (auto& th : threads) {
         th.join();
     }
